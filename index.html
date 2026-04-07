@@ -2683,7 +2683,8 @@ let BT={cats:[],allocs:[],items:[],savPct:20,activeMo:btNowKey(),months:{},split
 function btGmd(k){if(!BT.months[k])BT.months[k]={p1:0,p2:0,xBills:[],bigExp:[]};return BT.months[k];}
 function btMoInc(k){const m=btGmd(k);return(parseFloat(m.p1)||0)+(parseFloat(m.p2)||0);}
 function btMoBills(k){const mast=BT.items.filter(i=>i.active).reduce((s,i)=>s+btToMo(i),0);const m=btGmd(k);const x=(m.xBills||[]).reduce((s,b)=>s+(parseFloat(b.amount)||0),0);return mast+x;}
-function btMoLeft(k){const inc=btMoInc(k),bills=btMoBills(k),sav=inc*(BT.savPct/100);return Math.max(0,inc-bills-sav);}
+function btMoLeft(k){const inc=btMoInc(k),bills=btMoBills(k),sav=inc*(BT.savPct/100);const big=(btGmd(k).bigExp||[]).reduce((s,b)=>s+(parseFloat(b.amount)||0),0);return Math.max(0,inc-bills-sav-big);}
+function btMoBigExp(k){return(btGmd(k).bigExp||[]).reduce((s,b)=>s+(parseFloat(b.amount)||0),0);}
 
 function btLoad(){
   try{const r=localStorage.getItem(BT_STORE);if(r){const p=JSON.parse(r);BT.cats=Array.isArray(p.cats)?p.cats:btCl(BT_DC);BT.allocs=Array.isArray(p.allocs)?p.allocs:btCl(BT_DA);BT.items=Array.isArray(p.items)?p.items:btCl(BT_DI);BT.savPct=typeof p.savPct==='number'?p.savPct:20;BT.activeMo=p.activeMo||btNowKey();BT.months=p.months&&typeof p.months==='object'?p.months:{};}else{BT.cats=btCl(BT_DC);BT.allocs=btCl(BT_DA);BT.items=btCl(BT_DI);}}catch(e){BT.cats=btCl(BT_DC);BT.allocs=btCl(BT_DA);BT.items=btCl(BT_DI);}
@@ -3336,9 +3337,10 @@ function tjLoad(){
     TJ.finnhubKey=p.finnhubKey||'';
     TJ.trades=Array.isArray(p.trades)?p.trades:[];
     TJ.priceCache=p.priceCache&&typeof p.priceCache==='object'?p.priceCache:{};
+    TJ.candleCache=p.candleCache&&typeof p.candleCache==='object'?p.candleCache:{};
   }}catch(e){TJ.tickers=[{sym:'RIOT',name:'RIOT Platforms'}];TJ.trades=[];}
 }
-function tjSave(){try{localStorage.setItem(TJ_STORE,JSON.stringify({tickers:TJ.tickers,activeTicker:TJ.activeTicker,finnhubKey:TJ.finnhubKey,trades:TJ.trades,priceCache:TJ.priceCache}));}catch(e){}}
+function tjSave(){try{localStorage.setItem(TJ_STORE,JSON.stringify({tickers:TJ.tickers,activeTicker:TJ.activeTicker,finnhubKey:TJ.finnhubKey,trades:TJ.trades,priceCache:TJ.priceCache,candleCache:TJ.candleCache}));}catch(e){}}
 
 /* ── PRICE FETCH ── */
 function tjFetchPrice(){
@@ -3353,9 +3355,34 @@ function tjFetchPrice(){
         }
       }).catch(()=>{});
   });
+  // Fetch candles for active ticker (30 days)
+  tjFetchCandles(TJ.activeTicker);
   clearInterval(TJ.priceInterval);
   TJ.priceInterval=setInterval(()=>tjFetchPrice(),30000);
 }
+function tjFetchCandles(sym){
+  if(!TJ.finnhubKey||!sym)return;
+  if(!TJ.candleCache)TJ.candleCache={};
+  // Only refetch if cache is stale (>5 min)
+  const cached=TJ.candleCache[sym];
+  if(cached&&cached.ts&&Date.now()-cached.ts<300000)return;
+  const now=Math.floor(Date.now()/1000);
+  const from=now-30*86400;
+  fetch(`https://finnhub.io/api/v1/stock/candle?symbol=${sym}&resolution=D&from=${from}&to=${now}&token=${TJ.finnhubKey}`)
+    .then(r=>r.json())
+    .then(data=>{
+      if(data&&data.s==='ok'&&data.c){
+        TJ.candleCache[sym]={
+          dates:data.t.map(ts=>ts*1000),
+          open:data.o,high:data.h,low:data.l,close:data.c,volume:data.v,
+          ts:Date.now()
+        };
+        tjSave();
+        if(TJ.tab==='dashboard')requestAnimationFrame(()=>tjDrawCandleChart());
+      }
+    }).catch(()=>{});
+}
+function tjGetCandles(sym){if(!TJ.candleCache)TJ.candleCache={};return TJ.candleCache[sym||TJ.activeTicker]||null;}
 function tjUpdatePriceUI(){if(TJ.tab==='dashboard')tjRender();}
 function tjGetPrice(sym){return TJ.priceCache[sym||TJ.activeTicker]||null;}
 
@@ -3365,7 +3392,7 @@ function tjRender(){
   const el=document.getElementById('tj-content');if(!el)return;
   const map={dashboard:tjVDashboard,log:tjVLog,checklist:tjVChecklist,settings:tjVSettings};
   el.innerHTML=(map[TJ.tab]||tjVDashboard)();
-  if(TJ.tab==='dashboard')requestAnimationFrame(()=>{tjDrawPnlChart();tjDrawMonthlyBars();});
+  if(TJ.tab==='dashboard')requestAnimationFrame(()=>{tjDrawPnlChart();tjDrawMonthlyBars();tjDrawCandleChart();});
   tjRenderBottomBar();tjUpdateTopSub();try{updateTJStatusStrip();}catch(e){}
 }
 function tjUpdateTopSub(){
@@ -3430,6 +3457,18 @@ function tjVDashboard(){
   } else {
     priceCard=`<div class="tj-price-card"><div class="tj-ticker-badge">${sym}</div><div style="font-size:11px;color:var(--text3);margin-top:4px;">Fetching price…</div></div>`;
   }
+
+  // Candle chart (30-day price history)
+  const candles=tjGetCandles();
+  const candleChartHTML=(candles&&candles.close&&candles.close.length>2)?`<div class="tj-chart-card" style="padding:12px 12px 8px;">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
+      <div class="tj-chart-title" style="margin:0;">${sym} — 30 day price</div>
+      <div style="font-size:9px;color:var(--text4);">${candles.close.length} days</div>
+    </div>
+    <div class="tj-chart-wrap"><canvas id="tj-candle-canvas" height="180"></canvas></div>
+  </div>`:(!TJ.finnhubKey?'':`<div class="tj-chart-card" style="padding:12px;text-align:center;">
+    <div style="font-size:11px;color:var(--text3);">Loading price chart…</div>
+  </div>`);
 
   // Stats row — 4 metrics
   const statsHTML=`<div class="tj-stats" style="grid-template-columns:1fr 1fr 1fr 1fr;">
@@ -3597,7 +3636,7 @@ function tjVDashboard(){
     </div>`;
   }
 
-  return tickerPills+priceCard+statsHTML+pnlChartHTML+openHTML+stratHTML+monthlyHTML+holdHTML+strikeHTML+demoHTML;
+  return tickerPills+priceCard+candleChartHTML+statsHTML+pnlChartHTML+openHTML+stratHTML+monthlyHTML+holdHTML+strikeHTML+demoHTML;
 }
 
 /* ── CHART: Cumulative P&L ── */
@@ -3730,7 +3769,161 @@ function tjRoundRect(ctx,x,y,w,h,r){
   ctx.lineTo(x,y+r);ctx.quadraticCurveTo(x,y,x+r,y);
 }
 
-/* ── DEMO DATA ── */
+/* ── CHART: Candle chart with trade markers ── */
+function tjDrawCandleChart(){
+  const canvas=document.getElementById('tj-candle-canvas');if(!canvas)return;
+  const sym=TJ.activeTicker;
+  const candles=tjGetCandles(sym);
+  if(!candles||!candles.close||candles.close.length<3)return;
+
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  const w=canvas.parentElement.offsetWidth;const h=180;
+  canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';
+  const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+  const isLight=document.documentElement.getAttribute('data-theme')==='light';
+
+  const n=candles.close.length;
+  const pad={t:12,r:48,b:22,l:6};
+  const cw=w-pad.l-pad.r;const ch=h-pad.t-pad.b;
+
+  // Price range
+  const allHigh=Math.max(...candles.high);
+  const allLow=Math.min(...candles.low);
+  const priceRange=allHigh-allLow||1;
+  const pricePad=priceRange*0.08;
+  const minP=allLow-pricePad;const maxP=allHigh+pricePad;
+  const rangeP=maxP-minP;
+
+  // Volume range
+  const maxVol=Math.max(...candles.volume);
+
+  const toX=i=>pad.l+((i+0.5)/n)*cw;
+  const toY=p=>pad.t+(1-(p-minP)/rangeP)*ch;
+  const candleW=Math.max(2,Math.min(12,(cw/n)*0.7));
+
+  // Grid lines
+  ctx.strokeStyle=isLight?'rgba(0,0,0,.06)':'rgba(255,255,255,.05)';
+  ctx.lineWidth=0.5;
+  const gridSteps=4;
+  for(let i=0;i<=gridSteps;i++){
+    const p=minP+(rangeP/gridSteps)*i;
+    const y=toY(p);
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+    // Price labels
+    ctx.fillStyle=isLight?'#5C5040':'rgba(255,255,255,.3)';
+    ctx.font='9px -apple-system,sans-serif';ctx.textAlign='left';
+    ctx.fillText('$'+p.toFixed(2),w-pad.r+4,y+3);
+  }
+
+  // Volume bars (subtle, bottom 25% of chart)
+  const volH=ch*0.2;
+  const volBase=h-pad.b;
+  candles.volume.forEach((vol,i)=>{
+    const x=toX(i);
+    const bh=maxVol>0?(vol/maxVol)*volH:0;
+    const up=candles.close[i]>=candles.open[i];
+    ctx.fillStyle=up?(isLight?'rgba(20,104,48,.08)':'rgba(34,197,94,.08)'):(isLight?'rgba(168,48,40,.08)':'rgba(248,113,113,.08)');
+    ctx.fillRect(x-candleW/2,volBase-bh,candleW,bh);
+  });
+
+  // Candlesticks
+  candles.close.forEach((close,i)=>{
+    const open=candles.open[i];
+    const high=candles.high[i];
+    const low=candles.low[i];
+    const x=toX(i);
+    const up=close>=open;
+
+    const bodyTop=toY(Math.max(open,close));
+    const bodyBot=toY(Math.min(open,close));
+    const bodyH=Math.max(1,bodyBot-bodyTop);
+
+    // Wick
+    ctx.strokeStyle=up?(isLight?'#146830':'#22c55e'):(isLight?'#A83028':'#f87171');
+    ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(x,toY(high));ctx.lineTo(x,toY(low));ctx.stroke();
+
+    // Body
+    ctx.fillStyle=up?(isLight?'#146830':'#22c55e'):(isLight?'#A83028':'#f87171');
+    if(!up){
+      // Hollow body for down candles (just outline)
+      ctx.fillStyle=isLight?'#F5EFE2':'#131315';
+      ctx.fillRect(x-candleW/2,bodyTop,candleW,bodyH);
+      ctx.strokeStyle=isLight?'#A83028':'#f87171';
+      ctx.lineWidth=1;
+      ctx.strokeRect(x-candleW/2,bodyTop,candleW,bodyH);
+    } else {
+      ctx.fillRect(x-candleW/2,bodyTop,candleW,bodyH);
+    }
+  });
+
+  // Trade markers — overlay entry/exit points on the chart
+  const trades=TJ.trades.filter(t=>t.ticker===sym);
+  const startDate=candles.dates[0];const endDate=candles.dates[n-1];
+  trades.forEach(t=>{
+    // Entry marker (triangle up for sell, down for buy)
+    if(t.openedAt>=startDate&&t.openedAt<=endDate+86400000){
+      const dayIdx=candles.dates.findIndex(d=>d>=t.openedAt-86400000&&d<=t.openedAt+86400000);
+      if(dayIdx>=0&&t.strike){
+        const x=toX(dayIdx);const y=toY(t.strike);
+        const isSell=t.type.startsWith('sell_');
+        ctx.fillStyle=isSell?(isLight?'#0369A1':'#0EA5E9'):(isLight?'#C84E08':'#f97316');
+        ctx.beginPath();
+        if(isSell){ctx.moveTo(x-4,y-5);ctx.lineTo(x+4,y-5);ctx.lineTo(x,y+3);}
+        else{ctx.moveTo(x-4,y+5);ctx.lineTo(x+4,y+5);ctx.lineTo(x,y-3);}
+        ctx.fill();
+      }
+    }
+    // Close marker (X)
+    if(t.closedAt&&t.closedAt>=startDate&&t.closedAt<=endDate+86400000&&t.closePrice){
+      const dayIdx=candles.dates.findIndex(d=>d>=t.closedAt-86400000&&d<=t.closedAt+86400000);
+      if(dayIdx>=0){
+        const x=toX(dayIdx);const y=toY(t.strike||t.closePrice);
+        ctx.strokeStyle=(t.pnl||0)>=0?(isLight?'#146830':'#22c55e'):(isLight?'#A83028':'#f87171');
+        ctx.lineWidth=1.5;
+        ctx.beginPath();ctx.moveTo(x-3,y-3);ctx.lineTo(x+3,y+3);ctx.stroke();
+        ctx.beginPath();ctx.moveTo(x+3,y-3);ctx.lineTo(x-3,y+3);ctx.stroke();
+      }
+    }
+  });
+
+  // Date labels
+  ctx.fillStyle=isLight?'#5C5040':'rgba(255,255,255,.25)';
+  ctx.font='8px -apple-system,sans-serif';ctx.textAlign='center';
+  const labelCount=Math.min(5,n);
+  for(let i=0;i<labelCount;i++){
+    const idx=Math.round(i*(n-1)/(labelCount-1));
+    const d=new Date(candles.dates[idx]);
+    ctx.fillText(TJ_MN[d.getMonth()]+' '+d.getDate(),toX(idx),h-4);
+  }
+
+  // Current price line (dashed)
+  const p=tjGetPrice(sym);
+  if(p){
+    const priceY=toY(p.price);
+    ctx.setLineDash([3,3]);
+    ctx.strokeStyle=isLight?'rgba(3,105,161,.4)':'rgba(14,165,233,.4)';
+    ctx.lineWidth=1;
+    ctx.beginPath();ctx.moveTo(pad.l,priceY);ctx.lineTo(w-pad.r,priceY);ctx.stroke();
+    ctx.setLineDash([]);
+    // Price label
+    ctx.fillStyle=isLight?'#0369A1':'#0EA5E9';
+    ctx.font='500 9px -apple-system,sans-serif';ctx.textAlign='left';
+    ctx.fillText('$'+p.price.toFixed(2),w-pad.r+4,priceY+3);
+  }
+
+  // Legend (small, bottom-right)
+  const lgX=w-pad.r-80;const lgY=pad.t+4;
+  ctx.font='8px -apple-system,sans-serif';ctx.textAlign='left';
+  ctx.fillStyle=isLight?'#0369A1':'#0EA5E9';
+  ctx.beginPath();ctx.moveTo(lgX,lgY-2);ctx.lineTo(lgX+4,lgY-2);ctx.lineTo(lgX+2,lgY+3);ctx.fill();
+  ctx.fillText('Entry',lgX+7,lgY+2);
+  ctx.strokeStyle=isLight?'#146830':'#22c55e';ctx.lineWidth=1.5;
+  ctx.beginPath();ctx.moveTo(lgX+36,lgY-2);ctx.lineTo(lgX+40,lgY+2);ctx.stroke();
+  ctx.beginPath();ctx.moveTo(lgX+40,lgY-2);ctx.lineTo(lgX+36,lgY+2);ctx.stroke();
+  ctx.fillStyle=isLight?'#5C5040':'rgba(255,255,255,.3)';
+  ctx.fillText('Close',lgX+43,lgY+2);
+}
 function tjLoadDemo(){
   if(TJ.trades.filter(t=>t.status==='closed').length>0){if(!confirm('This adds 15 sample trades alongside your existing data. Continue?'))return;}
   const now=Date.now();const day=86400000;
@@ -4092,7 +4285,9 @@ function tjFlash(msg){const el=document.getElementById('tj-flash');if(!el)return
 const _btVOverview=btVOverview;
 btVOverview=function(){
   const mk=BT.activeMo,mi=btMoInc(mk),locked=btMoBills(mk),free=mi-locked;
-  const savAmt=mi*(BT.savPct/100),leftover=Math.max(0,free-savAmt);
+  const savAmt=mi*(BT.savPct/100);
+  const bigExp=btMoBigExp(mk);
+  const leftover=Math.max(0,free-savAmt-bigExp);
   const pctLocked=mi>0?Math.min(100,locked/mi*100):0;
   const freeCol=free<0?'red':free<mi*0.3?'amber':'green';
   const freeStatus=free<0?'In the red':free<mi*0.2?'Very tight':free<mi*0.4?'Manageable':'Healthy';
@@ -4100,7 +4295,23 @@ btVOverview=function(){
   const pills=[10,15,20,25].map(p=>{const a=mi*p/100;return`<div class="s-pill ${BT.savPct===p?'active':''}" onclick="btSetSav(${p})"><div class="s-pill-lbl">${p}%</div><div class="s-pill-amt">${mi>0?btF(a):'—'}</div></div>`;}).join('');
   const allocRows=BT.allocs.map((a,i)=>{const amt=leftover*(parseFloat(a.pct)||0)/100,col=BT_PAL[i%BT_PAL.length];return`<div class="alloc-row"><input class="alloc-emoji" type="text" value="${a.icon}" maxlength="2" onchange="btSetAE(${i},this.value)"/><div class="alloc-name-wrap"><input class="alloc-name" type="text" value="${a.label.replace(/"/g,'&quot;')}" onchange="btSetAN(${i},this.value)"/><div class="alloc-bar-bg"><div class="alloc-bar-fill" style="width:${Math.min(100,parseFloat(a.pct)||0)}%;background:${col};"></div></div></div><input class="alloc-pct" type="number" min="0" max="100" step="1" value="${a.pct}" oninput="btLiveAP(${i},this.value)"/><span style="font-size:11px;color:var(--hint);">%</span><div class="alloc-amt">${leftover>0?btF(amt):'—'}</div><button class="del-btn" onclick="btRmAlloc(${i})">✕</button></div>`;}).join('');
   const incNote=md.p1>0&&md.p2>0?'2 paychecks':md.p1>0?'1 paycheck set':'→ set in Monthly tab';
-  const msg=mi<=0?`<div style="color:var(--muted);line-height:1.7;">Set your paychecks for <strong style="color:var(--teal);">${btKeyDisp(mk)}</strong> in the <strong>Monthly</strong> tab.</div>`:free<0?`<div style="line-height:1.7;">Bills exceed income by <strong style="color:var(--red);">${btF(Math.abs(free))}</strong>. Review your master bills.</div>`:`<div style="line-height:1.7;">After bills <em style="color:var(--muted);">(${btF(locked)})</em> and savings <strong style="color:var(--purple);">${btF(savAmt)}</strong>, you have <strong style="color:var(--teal);">${btF(leftover)}</strong> to spend.</div>`;
+  const bigExpNote=bigExp>0?` and big expenses <strong style="color:var(--amber);">${btF(bigExp)}</strong>`:'';
+  const msg=mi<=0?`<div style="color:var(--muted);line-height:1.7;">Set your paychecks for <strong style="color:var(--teal);">${btKeyDisp(mk)}</strong> in the <strong>Monthly</strong> tab.</div>`:free<0?`<div style="line-height:1.7;">Bills exceed income by <strong style="color:var(--red);">${btF(Math.abs(free))}</strong>. Review your master bills.</div>`:`<div style="line-height:1.7;">After bills <em style="color:var(--muted);">(${btF(locked)})</em>, savings <strong style="color:var(--purple);">${btF(savAmt)}</strong>${bigExpNote}, you have <strong style="color:var(--teal);">${btF(leftover)}</strong> to spend.</div>`;
+
+  /* ── BIG EXPENSES CARD (if any exist this month) ── */
+  const bigExpItems=md.bigExp||[];
+  const bigExpCard=bigExpItems.length?`<div class="card" style="margin-bottom:10px;">
+    <div class="card-title">Big expenses — ${btKeyDisp(mk)}</div>
+    ${bigExpItems.map(b=>`<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--border);">
+      <span style="font-size:13px;">💸</span>
+      <span style="flex:1;font-size:13px;color:var(--text);">${b.name}</span>
+      <span style="font-family:var(--mono);font-size:13px;color:var(--amber);font-weight:500;">${btF(b.amount)}</span>
+    </div>`).join('')}
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0 0;margin-top:4px;">
+      <span style="font-size:11px;color:var(--muted);">Total impact</span>
+      <span style="font-family:var(--mono);font-size:14px;color:var(--amber);font-weight:600;">${btF(bigExp)}</span>
+    </div>
+  </div>`:'';
 
   /* ── PURCHASE TRACKER INTEGRATION ── */
   let spendData={};try{spendData=ptGetSpendByMonth(mk);}catch(e){}
@@ -4142,11 +4353,12 @@ btVOverview=function(){
     ${ptNote}
   </div>`;
 
-  return`<div class="hero"><div class="hero-cell hc-income"><div class="h-lbl">Total income</div><div class="h-val teal">${mi>0?btF(mi):'—'}</div><div class="h-sub">${incNote}</div></div><div class="hero-cell hc-locked"><div class="h-lbl">Locked in</div><div class="h-val red">${locked>0?btF(locked):'—'}</div><div class="h-sub">${mi>0?pctLocked.toFixed(0)+'% of income':BT.items.filter(i=>i.active).length+' master bills'}</div></div><div class="hero-cell hc-free"><div class="h-lbl">Left over · ${freeStatus}</div><div class="h-val ${freeCol}">${mi>0?(free<0?'-':'')+btF(Math.abs(free)):'—'}</div><div class="h-sub">${leftover>0&&mi>0?'After savings: '+btF(leftover):''}</div></div></div>
+  return`<div class="hero"><div class="hero-cell hc-income"><div class="h-lbl">Total income</div><div class="h-val teal">${mi>0?btF(mi):'—'}</div><div class="h-sub">${incNote}</div></div><div class="hero-cell hc-locked"><div class="h-lbl">Locked in</div><div class="h-val red">${locked>0?btF(locked):'—'}</div><div class="h-sub">${mi>0?pctLocked.toFixed(0)+'% of income':BT.items.filter(i=>i.active).length+' master bills'}</div></div><div class="hero-cell hc-free"><div class="h-lbl">Left over · ${freeStatus}</div><div class="h-val ${freeCol}">${mi>0?(free<0?'-':'')+btF(Math.abs(free)):'—'}</div><div class="h-sub">${leftover>0&&mi>0?(bigExp>0?'After savings+expenses: ':'After savings: ')+btF(leftover):''}</div></div></div>
   <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:10px;">
     <div class="card" style="margin-bottom:0;"><div class="card-title">Bills breakdown</div><div style="display:flex;align-items:center;gap:14px;"><canvas id="bt-bills-canvas" width="130" height="130" style="flex-shrink:0;"></canvas><div class="pie-legend" id="bt-bills-leg" style="flex:1;min-width:0;"></div></div></div>
     ${leftoverSplitCard}
   </div>
+  ${bigExpCard}
   <div class="card"><div class="split-toggle" onclick="btToggleSplit()" style="padding:10px 0;border-top:none;margin-top:0;"><span class="split-toggle-lbl">Edit spending split</span><span class="split-toggle-arr ${BT.splitOpen?'open':''}">▼</span></div>${BT.splitOpen?`<div><div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;"><span style="font-size:11px;color:var(--muted);">Total</span><span class="pct-badge ${badgeCls}" id="bt-ap-badge">${tp.toFixed(0)}%</span></div>${allocRows}<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;"><button class="btn btn-ghost btn-sm" onclick="btAddAlloc()">+ Add</button><button class="btn btn-primary btn-sm" onclick="btSaveAllocs()">Save split</button></div></div>`:''}</div>
   <div class="card"><div class="card-title">Savings target</div><div class="s-grid">${pills}</div>${msg}</div>`;
 };
