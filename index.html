@@ -1958,6 +1958,23 @@ html[data-theme="light"] .tc-stat-dot.blue{background:#0369A1;}
         <label>Expiry</label>
         <div class="tj-expiry-grid" id="tj-entry-expiries"></div>
       </div>
+      <div class="tj-field" id="tj-shareprice-field" style="display:none;">
+        <label>Price per share</label>
+        <div class="snp-trigger" onclick="snpOpen('Price per share $',TJ._entry.sharePrice||0,v=>{tjSetEntry('sharePrice',v)})">
+          <span class="snp-trigger-val" id="tj-shareprice-display">$0.00</span>
+          <span class="snp-trigger-icon">$</span>
+        </div>
+      </div>
+      <div class="tj-field" id="tj-shares-field" style="display:none;">
+        <label>Number of shares</label>
+        <div style="display:flex;align-items:center;gap:10px;">
+          <button class="snp-key" style="width:44px;height:44px;font-size:20px;" onclick="tjAdjShares(-10)">−10</button>
+          <button class="snp-key" style="width:44px;height:44px;font-size:20px;" onclick="tjAdjShares(-1)">−</button>
+          <div id="tj-shares-display" style="flex:1;background:var(--s1);border:1px solid var(--border2);border-radius:10px;padding:12px;font-size:22px;font-family:'DM Mono',monospace;color:var(--text);text-align:center;">100</div>
+          <button class="snp-key" style="width:44px;height:44px;font-size:20px;" onclick="tjAdjShares(1)">+</button>
+          <button class="snp-key" style="width:44px;height:44px;font-size:20px;" onclick="tjAdjShares(10)">+10</button>
+        </div>
+      </div>
       <div class="tj-field">
         <label>Notes (optional)</label>
         <input class="tj-input" id="tj-entry-notes" placeholder="e.g. rolled from last week…">
@@ -3392,7 +3409,7 @@ function tjRender(){
   const el=document.getElementById('tj-content');if(!el)return;
   const map={dashboard:tjVDashboard,log:tjVLog,checklist:tjVChecklist,settings:tjVSettings};
   el.innerHTML=(map[TJ.tab]||tjVDashboard)();
-  if(TJ.tab==='dashboard')requestAnimationFrame(()=>{tjDrawPnlChart();tjDrawMonthlyBars();tjDrawCandleChart();});
+  if(TJ.tab==='dashboard')requestAnimationFrame(()=>{tjDrawPnlChart();tjDrawShrPnlChart();tjDrawMonthlyBars();tjDrawCandleChart();});
   tjRenderBottomBar();tjUpdateTopSub();try{updateTJStatusStrip();}catch(e){}
 }
 function tjUpdateTopSub(){
@@ -3470,19 +3487,55 @@ function tjVDashboard(){
     <div style="font-size:11px;color:var(--text3);">Loading price chart…</div>
   </div>`);
 
-  // Stats row — 4 metrics
+  // Stats — split by options vs shares
+  const optClosed=closed.filter(t=>tjIsOptions(t.type));
+  const shrClosed=closed.filter(t=>tjIsShares(t.type));
+  const optPnl=optClosed.reduce((s,t)=>s+(t.pnl||0),0);
+  const shrPnl=shrClosed.reduce((s,t)=>s+(t.pnl||0),0);
+  const optWins=optClosed.filter(t=>(t.pnl||0)>0).length;
+  const shrWins=shrClosed.filter(t=>(t.pnl||0)>0).length;
+  const optWR=optClosed.length?Math.round(optWins/optClosed.length*100):0;
+  const shrWR=shrClosed.length?Math.round(shrWins/shrClosed.length*100):0;
+  const openOpt=open.filter(t=>tjIsOptions(t.type));
+  const openShr=open.filter(t=>tjIsShares(t.type));
+
   const statsHTML=`<div class="tj-stats" style="grid-template-columns:1fr 1fr 1fr 1fr;">
     <div class="tj-stat"><div class="tj-stat-lbl">Open</div><div class="tj-stat-val" style="color:var(--tjc);">${open.length}</div></div>
     <div class="tj-stat"><div class="tj-stat-lbl">Total P&L</div><div class="tj-stat-val" style="color:${totalPnl>=0?'var(--green)':'var(--red)'};">${tjFmt(totalPnl)}</div></div>
-    <div class="tj-stat"><div class="tj-stat-lbl">Win rate</div><div class="tj-stat-val" style="color:${winRate>=50?'var(--green)':'var(--amber)'};">${closed.length?winRate+'%':'—'}</div></div>
+    <div class="tj-stat"><div class="tj-stat-lbl">Win rate</div><div class="tj-stat-val" style="color:${winRate>=50?'var(--green)':'var(--amber)'};">${closed.length?winRate+'%':'\u2014'}</div></div>
     <div class="tj-stat"><div class="tj-stat-lbl">Trades</div><div class="tj-stat-val">${trades.length}</div></div>
-  </div>`;
+  </div>
+  ${(optClosed.length||shrClosed.length)?`<div class="tj-stats" style="grid-template-columns:1fr 1fr;margin-top:-2px;">
+    <div class="tj-stat"><div class="tj-stat-lbl">Options P&L</div><div class="tj-stat-val" style="font-size:14px;color:${optPnl>=0?'var(--green)':'var(--red)'};">${optClosed.length?tjFmt(optPnl)+' ('+optWR+'%W)':'\u2014'}</div></div>
+    <div class="tj-stat"><div class="tj-stat-lbl">Shares P&L</div><div class="tj-stat-val" style="font-size:14px;color:${shrPnl>=0?'var(--green)':'var(--red)'};">${shrClosed.length?tjFmt(shrPnl)+' ('+shrWR+'%W)':'\u2014'}</div></div>
+  </div>`:''}`;
 
-  // Cumulative P&L chart
-  const pnlChartHTML=closed.length>=2?`<div class="tj-chart-card">
-    <div class="tj-chart-title">Cumulative P&L</div>
-    <div class="tj-chart-wrap"><canvas id="tj-pnl-canvas" height="140"></canvas></div>
-  </div>`:'';
+  // Cumulative P&L — options (collapsible)
+  if(!TJ._optPnlOpen)TJ._optPnlOpen=false;
+  const hasOptData=optClosed.length>=2;
+  const hasShrData=shrClosed.length>=2;
+
+  const optPnlToggle=hasOptData?`<div class="tj-chart-card" style="padding:0;overflow:hidden;">
+    <div style="display:flex;justify-content:space-between;align-items:center;cursor:pointer;padding:12px 16px;" onclick="TJ._optPnlOpen=!TJ._optPnlOpen;tjRender();">
+      <div class="tj-chart-title" style="margin:0;">Options P&L</div>
+      <div style="display:flex;align-items:center;gap:8px;">
+        <span style="font-size:12px;font-family:'DM Mono',monospace;color:${optPnl>=0?'var(--green)':'var(--red)'};">${tjFmt(optPnl)}</span>
+        <span style="color:var(--text4);font-size:12px;transition:transform .2s;display:inline-block;${TJ._optPnlOpen?'transform:rotate(180deg);':''}">\u25BC</span>
+      </div>
+    </div>
+    ${TJ._optPnlOpen?`<div style="padding:0 12px 12px;"><div class="tj-chart-wrap"><canvas id="tj-pnl-canvas" height="170"></canvas></div></div>`:''}
+  </div>`:''
+
+  // Shares P&L chart (always visible when data exists)
+  const shrPnlHTML=hasShrData?`<div class="tj-chart-card">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+      <div class="tj-chart-title" style="margin:0;">Shares P&L</div>
+      <span style="font-size:12px;font-family:'DM Mono',monospace;color:${shrPnl>=0?'var(--green)':'var(--red)'};">${tjFmt(shrPnl)}</span>
+    </div>
+    <div class="tj-chart-wrap"><canvas id="tj-shr-pnl-canvas" height="140"></canvas></div>
+  </div>`:''
+
+  const pnlChartHTML=optPnlToggle+shrPnlHTML;
 
   // Strategy breakdown
   let stratHTML='';
@@ -3579,36 +3632,57 @@ function tjVDashboard(){
     }
   }
 
-  // Open positions (enhanced)
+  // Open positions (enhanced — options + shares)
   let openHTML='';
   if(open.length){
     const rows=open.map(t=>{
       const typeInfo=TJ_TYPES.find(x=>x.id===t.type)||TJ_TYPES[0];
       const curPrice=tjGetPrice(t.ticker);
-      let liveNote='',otmPct=0,isItm=false;
-      if(curPrice&&t.strike){
+      const isOpt=tjIsOptions(t.type);
+      const isShr=tjIsShares(t.type);
+      let liveNote='',otmPct=0,isItm=false,unrealPnl=null;
+
+      if(isOpt&&curPrice&&t.strike){
         const diff=curPrice.price-t.strike;
         if(t.type==='sell_call'){isItm=diff>=0;otmPct=Math.min(100,Math.abs(diff)/t.strike*100*10);liveNote=isItm?`ITM $${diff.toFixed(2)}`:`OTM $${Math.abs(diff).toFixed(2)}`;}
         else if(t.type==='sell_put'){isItm=diff<=0;otmPct=Math.min(100,Math.abs(diff)/t.strike*100*10);liveNote=isItm?`ITM $${Math.abs(diff).toFixed(2)}`:`OTM $${Math.abs(diff).toFixed(2)}`;}
       }
-      // Days to expiry
+      if(isShr&&curPrice&&t.premium){
+        const qty=t.contracts||1;
+        unrealPnl=t.type==='buy_shares'?(curPrice.price-t.premium)*qty:(t.premium-curPrice.price)*qty;
+        const pctChg=((curPrice.price-t.premium)/t.premium*100);
+        liveNote=`${unrealPnl>=0?'+':''}${tjFmt(unrealPnl)} (${pctChg>=0?'+':''}${pctChg.toFixed(1)}%)`;
+      }
+      // Days to expiry (options only)
       let dteHTML='';
-      if(t.expiry){
+      if(isOpt&&t.expiry){
         const dte=Math.ceil((new Date(t.expiry+'T16:00:00')-Date.now())/(1000*60*60*24));
         const cls=dte<=2?'danger':dte<=7?'warn':'safe';
         dteHTML=`<div class="tj-dte-badge ${cls}">${dte}d</div>`;
       }
-      const creditStr=t.premium?tjFmt(t.premium*100*(t.contracts||1)):'';
+      // Description line
+      let descLine='',metaLine='';
+      if(isOpt){
+        descLine=`${t.ticker} $${t.strike||''} ${t.expiry?tjShortDate(t.expiry+'T12:00:00'):''}`;
+        const creditStr=t.premium?tjFmt(t.premium*100*(t.contracts||1)):'';
+        metaLine=`${(t.contracts||1)} contract${(t.contracts||1)>1?'s':''} · ${creditStr?creditStr+' credit':''}`;
+      } else {
+        descLine=`${t.ticker} · ${(t.contracts||1)} shares`;
+        metaLine=`Bought at $${(t.premium||0).toFixed(2)}${curPrice?' · Now $'+curPrice.price.toFixed(2):''}`;
+      }
+      const closeLabel=isShr?'Sell':'Close';
+      const liveColor=isShr?(unrealPnl!==null?(unrealPnl>=0?'var(--green)':'var(--red)'):'var(--text3)'):(isItm?'var(--red)':'var(--green)');
+
       return`<div class="tj-pos-row" style="flex-wrap:wrap;">
         <div class="tj-type-badge ${typeInfo.cls}">${typeInfo.short}</div>
         <div class="tj-pos-info">
-          <div class="tj-pos-title">${t.ticker} $${t.strike||''} ${t.expiry?tjShortDate(t.expiry+'T12:00:00'):''}</div>
-          <div class="tj-pos-meta">${(t.contracts||1)} contract${(t.contracts||1)>1?'s':''} · ${creditStr?creditStr+' credit':''}</div>
+          <div class="tj-pos-title">${descLine}</div>
+          <div class="tj-pos-meta">${metaLine}</div>
         </div>
         ${dteHTML}
-        <div style="font-size:11px;color:${isItm?'var(--red)':'var(--green)'};">${liveNote}</div>
-        <button class="tj-pos-close-btn" onclick="tjClosePosition('${t.id}')">Close</button>
-        ${liveNote?`<div style="width:100%;padding-left:36px;"><div class="tj-otm-bar"><div class="tj-otm-fill" style="width:${otmPct}%;background:${isItm?'var(--red)':'var(--green)'};"></div></div></div>`:''}
+        <div style="font-size:11px;color:${liveColor};">${liveNote}</div>
+        <button class="tj-pos-close-btn" onclick="tjClosePosition('${t.id}')">${closeLabel}</button>
+        ${isOpt&&liveNote?`<div style="width:100%;padding-left:36px;"><div class="tj-otm-bar"><div class="tj-otm-fill" style="width:${otmPct}%;background:${isItm?'var(--red)':'var(--green)'};"></div></div></div>`:''}
       </div>`;
     }).join('');
     openHTML=`<div class="tj-pos-card"><div class="tj-pos-head"><div class="tj-pos-lbl">Open positions</div><div style="font-size:10px;color:var(--text3);">${open.length}</div></div><div class="tj-pos-body">${rows}</div></div>`;
@@ -3650,7 +3724,7 @@ function tjGetMonthlyData(sym){
 function tjDrawPnlChart(){
   const canvas=document.getElementById('tj-pnl-canvas');if(!canvas)return;
   const sym=TJ.activeTicker;
-  const closed=TJ.trades.filter(t=>t.ticker===sym&&t.status==='closed').sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
+  const closed=TJ.trades.filter(t=>t.ticker===sym&&t.status==='closed'&&tjIsOptions(t.type)).sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
   if(closed.length<2)return;
 
   const dpr=Math.min(window.devicePixelRatio||1,2);
@@ -3750,6 +3824,111 @@ function tjDrawPnlChart(){
     let closest=null,minDist=30;
     pts.forEach((p,i)=>{const dx=Math.abs(toX(p.x)-mx);if(dx<minDist){minDist=dx;closest={...p,idx:i};}});
     if(closest){tjFlash('Trade '+(closest.idx+1)+': '+(closest.pnl>=0?'+':'')+closest.pnl.toFixed(2)+' \u00b7 Total: '+tjFmt(closest.y));}
+  };
+}
+
+/* ── CHART: Shares P&L ── */
+function tjDrawShrPnlChart(){
+  const canvas=document.getElementById('tj-shr-pnl-canvas');if(!canvas)return;
+  const sym=TJ.activeTicker;
+  const closed=TJ.trades.filter(t=>t.ticker===sym&&t.status==='closed'&&tjIsShares(t.type)).sort((a,b)=>(a.closedAt||0)-(b.closedAt||0));
+  if(closed.length<2)return;
+
+  const dpr=Math.min(window.devicePixelRatio||1,2);
+  const w=canvas.parentElement.offsetWidth;const h=140;
+  canvas.width=w*dpr;canvas.height=h*dpr;canvas.style.width=w+'px';canvas.style.height=h+'px';
+  const ctx=canvas.getContext('2d');ctx.scale(dpr,dpr);
+  const isLight=document.documentElement.getAttribute('data-theme')==='light';
+
+  const pts=[];let cum=0;
+  closed.forEach(t=>{cum+=(t.pnl||0);pts.push({x:t.closedAt,y:cum,pnl:t.pnl||0,shares:t.contracts||1});});
+
+  const pad={t:18,r:14,b:26,l:50};
+  const cw=w-pad.l-pad.r,ch=h-pad.t-pad.b;
+  const minY=Math.min(0,...pts.map(p=>p.y))*1.1;
+  const maxY=Math.max(0,...pts.map(p=>p.y))*1.1||1;
+  const rangeY=maxY-minY||1;
+  const minX=pts[0].x,maxX=pts[pts.length-1].x;
+  const rangeX=maxX-minX||1;
+  const toX=v=>pad.l+(v-minX)/rangeX*cw;
+  const toY=v=>pad.t+(1-(v-minY)/rangeY)*ch;
+
+  // Grid
+  const gridC=isLight?'rgba(0,0,0,.05)':'rgba(255,255,255,.04)';
+  const labelC=isLight?'#5C5040':'rgba(255,255,255,.25)';
+  ctx.strokeStyle=gridC;ctx.lineWidth=0.5;
+  for(let i=0;i<=3;i++){
+    const val=minY+(rangeY/3)*i;const y=toY(val);
+    ctx.beginPath();ctx.moveTo(pad.l,y);ctx.lineTo(w-pad.r,y);ctx.stroke();
+    ctx.fillStyle=labelC;ctx.font='9px -apple-system,sans-serif';ctx.textAlign='right';
+    ctx.fillText('$'+Math.round(val),pad.l-6,y+3);
+  }
+  // Zero line
+  const zeroY=toY(0);
+  ctx.strokeStyle=isLight?'rgba(0,0,0,.1)':'rgba(255,255,255,.08)';ctx.lineWidth=1;
+  ctx.beginPath();ctx.moveTo(pad.l,zeroY);ctx.lineTo(w-pad.r,zeroY);ctx.stroke();
+
+  // Bar chart style (each trade = a bar from zero)
+  const barW=Math.max(6,Math.min(28,cw/pts.length*0.6));
+  pts.forEach((p,i)=>{
+    const x=toX(p.x);
+    const barTop=p.pnl>=0?toY(p.y):zeroY;
+    const barBot=p.pnl>=0?zeroY:toY(p.y);
+    const bh=Math.max(2,Math.abs(barBot-barTop));
+    const col=p.pnl>=0?(isLight?'#146830':'#22c55e'):(isLight?'#A83028':'#f87171');
+
+    // Bar shadow
+    ctx.fillStyle=p.pnl>=0?(isLight?'rgba(20,104,48,.08)':'rgba(34,197,94,.06)'):(isLight?'rgba(168,48,40,.08)':'rgba(248,113,113,.06)');
+    ctx.beginPath();tjRoundRect(ctx,x-barW/2-1,Math.min(barTop,barBot)-1,barW+2,bh+2,3);ctx.fill();
+    // Main bar
+    ctx.fillStyle=col;
+    ctx.beginPath();tjRoundRect(ctx,x-barW/2,Math.min(barTop,barBot),barW,bh,2);ctx.fill();
+
+    // P&L label on top of each bar
+    if(pts.length<=10){
+      ctx.fillStyle=col;ctx.font='500 9px -apple-system,sans-serif';ctx.textAlign='center';
+      const lblY=p.pnl>=0?Math.min(barTop,barBot)-5:Math.max(barTop,barBot)+12;
+      ctx.fillText((p.pnl>=0?'+':'')+Math.round(p.pnl),x,lblY);
+    }
+  });
+
+  // Cumulative line overlay
+  ctx.beginPath();ctx.moveTo(toX(pts[0].x),toY(pts[0].y));
+  for(let i=1;i<pts.length;i++){
+    const prev=pts[i-1];const cur=pts[i];
+    const cpx=(toX(prev.x)+toX(cur.x))/2;
+    ctx.bezierCurveTo(cpx,toY(prev.y),cpx,toY(cur.y),toX(cur.x),toY(cur.y));
+  }
+  ctx.strokeStyle=isLight?'rgba(3,105,161,.4)':'rgba(14,165,233,.35)';
+  ctx.lineWidth=1.5;ctx.setLineDash([4,3]);ctx.stroke();ctx.setLineDash([]);
+
+  // End value badge
+  const last=pts[pts.length-1];
+  const lx=toX(last.x),ly=toY(last.y);
+  ctx.beginPath();ctx.arc(lx,ly,4,0,Math.PI*2);
+  ctx.fillStyle=cum>=0?(isLight?'#146830':'#22c55e'):(isLight?'#A83028':'#f87171');ctx.fill();
+  ctx.fillStyle=isLight?'#1A1208':'#f0ede8';ctx.font='600 10px -apple-system,sans-serif';ctx.textAlign='center';
+  ctx.fillText(tjFmt(cum),lx,ly-10);
+
+  // X axis dates
+  ctx.fillStyle=labelC;ctx.font='8px -apple-system,sans-serif';ctx.textAlign='center';
+  const labelN=Math.min(4,pts.length);
+  for(let i=0;i<labelN;i++){
+    const idx=Math.round(i*(pts.length-1)/(labelN-1));
+    ctx.fillText(tjShortDate(pts[idx].x),toX(pts[idx].x),h-4);
+  }
+
+  // Top label
+  ctx.font='9px -apple-system,sans-serif';ctx.textAlign='left';ctx.fillStyle=labelC;
+  ctx.fillText(closed.length+' share trades',pad.l+4,pad.t-4);
+
+  // Tap handler
+  canvas.onclick=function(e){
+    const rect=canvas.getBoundingClientRect();
+    const mx=e.clientX-rect.left;
+    let closest=null,minDist=30;
+    pts.forEach((p,i)=>{const dx=Math.abs(toX(p.x)-mx);if(dx<minDist){minDist=dx;closest={...p,idx:i};}});
+    if(closest){tjFlash('Trade '+(closest.idx+1)+': '+(closest.pnl>=0?'+':'')+closest.pnl.toFixed(2)+' ('+closest.shares+' shares)');}
   };
 }
 
@@ -4203,7 +4382,7 @@ function tjVSettings(){
 
 /* ── ENTRY SHEET ── */
 function tjOpenEntry(){
-  TJ._entry={ticker:TJ.activeTicker,type:'sell_call',strike:null,premium:0,contracts:1,expiry:'',notes:''};
+  TJ._entry={ticker:TJ.activeTicker,type:'sell_call',strike:null,premium:0,contracts:1,expiry:'',notes:'',sharePrice:0,shares:100};
   TJ._editId=null;
   tjRenderEntrySheet();
   document.getElementById('tj-entry-overlay').classList.add('open');
@@ -4211,23 +4390,28 @@ function tjOpenEntry(){
 function tjCloseEntry(){document.getElementById('tj-entry-overlay').classList.remove('open');}
 function tjSetEntry(k,v){TJ._entry[k]=v;tjRenderEntrySheet();}
 function tjAdjContracts(d){TJ._entry.contracts=Math.max(1,(TJ._entry.contracts||1)+d);tjRenderEntrySheet();}
+function tjAdjShares(d){TJ._entry.shares=Math.max(1,(TJ._entry.shares||100)+d);tjRenderEntrySheet();}
+function tjIsOptions(type){return type&&(type.includes('call')||type.includes('put'));}
+function tjIsShares(type){return type==='buy_shares'||type==='sell_shares';}
 
 function tjRenderEntrySheet(){
   const e=TJ._entry;
-  // Ticker pills
   document.getElementById('tj-entry-tickers').innerHTML=TJ.tickers.map(t=>`<button class="tj-ticker-pill ${t.sym===e.ticker?'active':''}" onclick="tjSetEntry('ticker','${t.sym}')">${t.sym}</button>`).join('');
-  // Type buttons
   document.getElementById('tj-entry-types').innerHTML=TJ_TYPES.map(t=>{
     const sel=e.type===t.id;
     const cls=sel?(t.cls==='call'?'sel-green':t.cls==='put'?'sel-red':'sel'):'';
     return`<button class="tj-type-btn ${cls}" onclick="tjSetEntry('type','${t.id}')">${t.label}</button>`;
   }).join('');
-  // Strike suggestions based on live price
-  const isOptions=e.type.includes('call')||e.type.includes('put');
-  document.getElementById('tj-strike-field').style.display=isOptions?'flex':'none';
-  document.getElementById('tj-premium-field').style.display=isOptions?'flex':'none';
-  document.getElementById('tj-expiry-field').style.display=isOptions?'flex':'none';
-  if(isOptions){
+  const isOpt=tjIsOptions(e.type);
+  const isShr=tjIsShares(e.type);
+  document.getElementById('tj-strike-field').style.display=isOpt?'flex':'none';
+  document.getElementById('tj-premium-field').style.display=isOpt?'flex':'none';
+  document.getElementById('tj-expiry-field').style.display=isOpt?'flex':'none';
+  document.getElementById('tj-contracts-field').style.display=isOpt?'flex':'none';
+  document.getElementById('tj-shareprice-field').style.display=isShr?'flex':'none';
+  document.getElementById('tj-shares-field').style.display=isShr?'flex':'none';
+
+  if(isOpt){
     const p=tjGetPrice(e.ticker);
     const basePrice=p?Math.round(p.price):10;
     const step=basePrice<20?0.5:basePrice<50?1:5;
@@ -4235,7 +4419,6 @@ function tjRenderEntrySheet(){
     document.getElementById('tj-entry-strikes').innerHTML=strikes.map(s=>`<button class="tj-strike-btn ${e.strike===s?'sel':''}" onclick="tjSetEntry('strike',${s})">$${s}</button>`).join('');
     const csLabel=document.getElementById('tj-custom-strike-label');
     if(csLabel)csLabel.textContent=e.strike&&!strikes.includes(e.strike)?'$'+e.strike:'or tap for custom';
-    // Expiry dates — next 4 Fridays
     const expiries=[];const today=new Date();
     for(let i=0;i<28;i++){const d=new Date(today);d.setDate(d.getDate()+i);if(d.getDay()===5){expiries.push(d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'));if(expiries.length>=5)break;}}
     document.getElementById('tj-entry-expiries').innerHTML=expiries.map(exp=>{
@@ -4243,62 +4426,69 @@ function tjRenderEntrySheet(){
       return`<button class="tj-expiry-btn ${e.expiry===exp?'sel':''}" onclick="tjSetEntry('expiry','${exp}')">${label}</button>`;
     }).join('');
   }
-  // Premium display
   const pd=document.getElementById('tj-premium-display');
   if(pd)pd.textContent=e.premium?'$'+e.premium.toFixed(2):'$0.00';
   if(pd)pd.className=e.premium?'snp-trigger-val':'snp-trigger-val empty';
-  // Contracts
   const cd=document.getElementById('tj-contracts-display');
   if(cd)cd.textContent=e.contracts||1;
+  const spd=document.getElementById('tj-shareprice-display');
+  if(spd)spd.textContent=e.sharePrice?'$'+e.sharePrice.toFixed(2):'$0.00';
+  if(spd)spd.className=e.sharePrice?'snp-trigger-val':'snp-trigger-val empty';
+  const sd=document.getElementById('tj-shares-display');
+  if(sd)sd.textContent=e.shares||100;
 }
 
 function tjSubmitTrade(){
   const e=TJ._entry;
   if(!e.ticker){tjFlash('Select a ticker');return;}
-  const isOptions=e.type.includes('call')||e.type.includes('put');
-  if(isOptions&&!e.strike){tjFlash('Set a strike price');return;}
+  const isOpt=tjIsOptions(e.type);
+  const isShr=tjIsShares(e.type);
+  if(isOpt&&!e.strike){tjFlash('Set a strike price');return;}
+  if(isShr&&!e.sharePrice){tjFlash('Enter your buy/sell price');return;}
 
   const trade={
     id:tjUid(),
     ticker:e.ticker,
     type:e.type,
-    strike:isOptions?e.strike:null,
-    premium:e.premium||0,
-    contracts:e.contracts||1,
-    expiry:isOptions?e.expiry:'',
+    strike:isOpt?e.strike:null,
+    premium:isOpt?(e.premium||0):(isShr?(e.sharePrice||0):0),
+    contracts:isOpt?(e.contracts||1):(isShr?(e.shares||100):1),
+    expiry:isOpt?e.expiry:'',
     openedAt:Date.now(),
     closedAt:null,
     closePrice:null,
     status:'open',
     pnl:null,
-    notes:e.notes||''
+    notes:e.notes||'',
+    tradeClass:isOpt?'options':'shares'
   };
   TJ.trades.push(trade);
   tjSave();tjCloseEntry();tjRender();
   const typeInfo=TJ_TYPES.find(x=>x.id===e.type);
-  tjFlash(`✓ ${typeInfo?typeInfo.label:e.type} logged`);
+  tjFlash('\u2713 '+(typeInfo?typeInfo.label:e.type)+' logged');
   tjSyncToHabit();
 }
 
-/* ── ACTIONS ── */
+/* \u2500\u2500 ACTIONS \u2500\u2500 */
 function tjClosePosition(id){
   const trade=TJ.trades.find(t=>t.id===id);if(!trade)return;
-  const isOptions=trade.type.includes('call')||trade.type.includes('put');
+  const isOpt=tjIsOptions(trade.type);
   const isSell=trade.type.startsWith('sell_');
+  const label=isOpt?'Close Price (per contract) $':'Sell Price per share $';
 
-  snpOpen('Close Price $',0,v=>{
+  snpOpen(label,0,v=>{
     trade.closedAt=Date.now();
     trade.closePrice=v;
     trade.status='closed';
-    if(isOptions){
+    if(isOpt){
       const openCredit=trade.premium*(trade.contracts||1)*100;
       const closeCost=v*(trade.contracts||1)*100;
       trade.pnl=isSell?openCredit-closeCost:closeCost-openCredit;
     } else {
-      const shares=(trade.contracts||1);
-      trade.pnl=trade.type==='buy_shares'?(v-trade.premium)*shares:(trade.premium-v)*shares;
+      const qty=trade.contracts||1;
+      trade.pnl=trade.type==='buy_shares'?(v-trade.premium)*qty:(trade.premium-v)*qty;
     }
-    tjSave();tjRender();tjFlash(`✓ Closed for ${tjFmt(trade.pnl)}`);
+    tjSave();tjRender();tjFlash('\u2713 Closed for '+tjFmt(trade.pnl));
   });
 }
 function tjDeleteTrade(id){
